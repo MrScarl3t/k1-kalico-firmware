@@ -135,6 +135,8 @@ command_parsef(uint8_t *p, uint8_t *maxend
             goto error;
         }
     }
+    if (p > maxend)
+        goto error;
     return p;
 error:
     shutdown("Command parser error");
