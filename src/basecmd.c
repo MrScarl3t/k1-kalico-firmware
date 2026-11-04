@@ -20,6 +20,9 @@
 static uint32_t allocMoveQueueCountMax = 0;
 static uint32_t usedMoveQueueNumber = 0;
 static uint32_t usedMoveQueueWaterLine = 0;
+// Move queue slots allocated but not reported to the host (inherited Creality
+// change from f83d3831; its purpose is unverified, see k1-clean docs/04-mcu.md).
+#define MOVE_RESERVED_SLOTS 10
 
 static void *alloc_end;
 
@@ -177,6 +180,11 @@ move_reset(void)
     mf->next = NULL;
     move_free_list = move_list;
 	output("allocMax=%u usedMax=%u",allocMoveQueueCountMax,usedMoveQueueWaterLine);
+    // Every node is back on the free list: nothing is in use any more (the
+    // high-water mark above is kept). Without this, entries abandoned by a
+    // shutdown stayed counted and inflated usedMax after config_reset or
+    // clear_shutdown.
+    usedMoveQueueNumber = 0;
 }
 DECL_SHUTDOWN(move_reset);
 
@@ -188,6 +196,10 @@ move_finalize(void)
     struct move_queue_head dummy;
     move_queue_setup(&dummy, sizeof(*move_free_list));
     move_list = alloc_chunks(move_item_size, 4096, &move_count);
+    // The reported count must not wrap (see command_get_config): refuse a
+    // queue that the reserve would use up instead of reporting ~2^32 moves.
+    if (move_count <= MOVE_RESERVED_SLOTS)
+        shutdown("Move queue too small");
     move_reset();
 }
 
@@ -258,8 +270,13 @@ static uint32_t config_crc;
 void
 command_get_config(uint32_t *args)
 {
+    // move_count - MOVE_RESERVED_SLOTS is computed as int: unguarded, it went
+    // negative before finalize (move_count == 0) and the MCU sent it as the
+    // uint32 4294967286.
+    uint16_t reported = move_count > MOVE_RESERVED_SLOTS
+                        ? move_count - MOVE_RESERVED_SLOTS : 0;
     sendf("config is_config=%c crc=%u is_shutdown=%c move_count=%hu"
-          , is_finalized(), config_crc, sched_is_shutdown(), move_count - 10);
+          , is_finalized(), config_crc, sched_is_shutdown(), reported);
 }
 DECL_COMMAND_FLAGS(command_get_config, HF_IN_SHUTDOWN, "get_config");
 
